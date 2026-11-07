@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Logic Game</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --surface: #ffffff;
+      --text: #1d2330;
+      --muted: #5b6475;
+      --accent: #2f5bd9;
+      --border: #d8dce4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14171d;
+        --surface: #1e232c;
+        --text: #e9ecf2;
+        --muted: #9aa3b5;
+        --accent: #7a9bff;
+        --border: #333a47;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    main {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+    .tagline { color: var(--muted); margin: 0 0 2rem; }
+
+    #game {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      min-height: 16rem;
+    }
+
+    button {
+      font: inherit;
+      padding: 0.6rem 1.2rem;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+    #message { margin-top: 1rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>My Logic Game</h1>
+    <p class="tagline">A short line describing the puzzle.</p>
+
+    <section id="game" aria-label="Game board">
+      <p>Your game goes here.</p>
+      <button id="start">Start</button>
+      <p id="message" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script>
+    // Replace this with your game logic (or move it to game.js
+    // and load it with <script src="game.js"></script>).
+    document.getElementById("start").addEventListener("click", function () {
+      document.getElementById("message").textContent = "It works! Game starting...";
+    });
+  </script>
+</body>
+</html>
