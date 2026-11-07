@@ -23,66 +23,328 @@
         --border: #333a47;
       }
     }
-
     * { box-sizing: border-box; }
-
     body {
       margin: 0;
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
-      line-height: 1.6;
+      line-height: 1.5;
     }
-
-    main {
-      max-width: 40rem;
-      margin: 0 auto;
-      padding: 2rem 1.25rem 4rem;
+    main { max-width: 42rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+    h1 { font-size: 1.8rem; margin: 0 0 0.25rem; }
+    .tagline { color: var(--muted); margin: 0 0 1.25rem; }
+    .controls { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    select, button {
+      font: inherit; padding: 0.45rem 0.8rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
     }
-
-    h1 { font-size: 2rem; margin: 0 0 0.25rem; }
-    .tagline { color: var(--muted); margin: 0 0 2rem; }
-
-    #game {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      min-height: 16rem;
+    button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    #status {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem 1rem; margin-bottom: 1rem;
     }
-
-    button {
-      font: inherit;
-      padding: 0.6rem 1.2rem;
-      border: 0;
-      border-radius: 6px;
-      background: var(--accent);
-      color: #fff;
-      cursor: pointer;
+    #status .main { font-size: 1.1rem; font-weight: 600; }
+    #status .sub { color: var(--muted); font-size: 0.92rem; }
+    .chip {
+      display: inline-block; width: 0.9em; height: 0.9em; border-radius: 50%;
+      border: 2px solid #222; margin-right: 0.4em; vertical-align: -0.05em;
     }
-    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-
-    #message { margin-top: 1rem; color: var(--muted); }
+    .chip.red { background: #c62828; }
+    .chip.blue { background: #1f4fbf; }
+    #board svg {
+      display: block; width: 100%; max-width: 640px; height: auto; margin: 0 auto;
+      border: 1px solid var(--border); border-radius: 8px; touch-action: manipulation;
+    }
+    #board .vtx { cursor: default; }
+    #board .vtx.ok { cursor: pointer; }
+    #board .vtx.ok:hover { stroke-width: 4; }
+    details { margin-top: 1.25rem; color: var(--muted); }
+    details summary { cursor: pointer; color: var(--text); }
   </style>
 </head>
 <body>
   <main>
     <h1>My Logic Game</h1>
-    <p class="tagline">A short line describing the puzzle.</p>
+    <p class="tagline">Two players, one graph. Make every region white.</p>
 
-    <section id="game" aria-label="Game board">
-      <p>Your game goes here.</p>
-      <button id="start">Start</button>
-      <p id="message" aria-live="polite"></p>
-    </section>
+    <div class="controls">
+      <label>Vertices
+        <select id="size"></select>
+      </label>
+      <button id="newgame" type="button">New game</button>
+    </div>
+
+    <div id="status" aria-live="polite"></div>
+    <div id="board"></div>
+
+    <details>
+      <summary>Rules</summary>
+      <p>Blue moves first. First, players take turns colouring a white vertex with their own colour. Once every vertex is coloured, players take turns flipping one vertex between red and blue. A vertex never goes back to white.</p>
+      <p>Each region is coloured by (red vertices &minus; blue vertices) around its edge, modulo 3: +1 is red, &minus;1 is blue, 0 is white. White vertices don&rsquo;t count. The outside of the graph is a region too (it fills the background). If every region is white after your move, you win.</p>
+    </details>
   </main>
 
   <script>
-    // Replace this with your game logic (or move it to game.js
-    // and load it with <script src="game.js">
-    document.getElementById("start").addEventListener("click", function () {
-      document.getElementById("message").textContent = "It works! Game starting...";
-    });
+    "use strict";
+
+    // ---- SETTINGS (change these if the rules should differ) ----
+    const MIN_N = 12, MAX_N = 30;               // vertex count range (must be even)
+    const FIRST_PLAYER = "blue";
+    const WIN_CHECK_DURING_COLOURING = true;    // can a player win before all vertices are coloured?
+    const FLIP_ANY_VERTEX = true;               // false = players may only flip vertices of their own colour
+    const LAYOUT_CANDIDATES = 15;               // random graphs tried, best-looking layout is kept
+
+    const WHITE = 0, RED = 1, BLUE = -1;
+
+    // ---- GRAPH GENERATION ----
+    // A planar cubic graph is the dual of a planar triangulation.
+    // Triangulation vertices become the regions; its triangles become the cubic graph's vertices.
+
+    function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+
+    function countTrisAt(tris, v) {
+      let c = 0;
+      for (const t of tris) if (t[0] === v || t[1] === v || t[2] === v) c++;
+      return c;
+    }
+
+    function hasEdge(tris, a, b) {
+      for (const t of tris) if (t.includes(a) && t.includes(b)) return true;
+      return false;
+    }
+
+    function tryFlip(tris) {
+      const i = randInt(0, tris.length - 1);
+      const t = tris[i];
+      const e = randInt(0, 2);
+      const a = t[e], b = t[(e + 1) % 3], c = t[(e + 2) % 3];
+      let j = -1;
+      for (let k = 0; k < tris.length; k++) {
+        if (k !== i && tris[k].includes(a) && tris[k].includes(b)) { j = k; break; }
+      }
+      if (j < 0) return;
+      const d = tris[j].find(x => x !== a && x !== b);
+      if (countTrisAt(tris, a) <= 3 || countTrisAt(tris, b) <= 3) return;
+      if (hasEdge(tris, c, d)) return;
+      tris[i] = [c, d, a];
+      tris[j] = [c, d, b];
+    }
+
+    function makeTriangulation(m) {
+      const tris = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
+      let count = 4;
+      while (count < m) {
+        const i = randInt(0, tris.length - 1);
+        const [a, b, c] = tris[i];
+        const x = count++;
+        tris.splice(i, 1, [a, b, x], [b, c, x], [c, a, x]);
+      }
+      for (let k = 0; k < 30 * m; k++) tryFlip(tris);
+      return tris;
+    }
+
+    // Triangles around triangulation vertex v, in cyclic order (= boundary of region v).
+    function cycleAround(tris, v) {
+      const ts = [];
+      tris.forEach((t, i) => { if (t.includes(v)) ts.push(i); });
+      const order = [ts[0]];
+      const used = new Set(order);
+      while (order.length < ts.length) {
+        const cur = tris[order[order.length - 1]];
+        let found = -1;
+        for (const j of ts) {
+          if (used.has(j)) continue;
+          let shared = 0;
+          for (const x of tris[j]) if (cur.includes(x)) shared++;
+          if (shared === 2) { found = j; break; }
+        }
+        if (found < 0) return null;
+        order.push(found);
+        used.add(found);
+      }
+      return order;
+    }
+
+    // Tutte embedding: pin the outer region as a regular polygon, every other
+    // vertex sits at the average of its neighbours. Planar for 3-connected graphs.
+    function layout(g, outer) {
+      const n = g.n;
+      const pos = [];
+      const fixed = new Array(n).fill(false);
+      for (let i = 0; i < n; i++) pos.push([0, 0]);
+      const ring = g.cycles[outer];
+      ring.forEach((t, k) => {
+        const ang = 2 * Math.PI * k / ring.length - Math.PI / 2;
+        pos[t] = [Math.cos(ang), Math.sin(ang)];
+        fixed[t] = true;
+      });
+      for (let iter = 0; iter < 1500; iter++) {
+        for (let i = 0; i < n; i++) {
+          if (fixed[i]) continue;
+          let x = 0, y = 0;
+          for (const j of g.nbr[i]) { x += pos[j][0]; y += pos[j][1]; }
+          pos[i] = [x / 3, y / 3];
+        }
+      }
+      let minD = Infinity;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const d = Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1]);
+          if (d < minD) minD = d;
+        }
+      }
+      return { pos, score: minD };
+    }
+
+    function buildOneGraph(n) {
+      const m = n / 2 + 2;                      // number of regions (Euler's formula)
+      const tris = makeTriangulation(m);
+      const nbr = tris.map(() => []);
+      const edges = [];
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          let shared = 0;
+          for (const x of tris[j]) if (tris[i].includes(x)) shared++;
+          if (shared === 2) { nbr[i].push(j); nbr[j].push(i); edges.push([i, j]); }
+        }
+      }
+      if (nbr.some(a => a.length !== 3) || tris.length !== n) return null;
+      const cycles = [];
+      for (let v = 0; v < m; v++) {
+        const c = cycleAround(tris, v);
+        if (!c) return null;
+        cycles.push(c);
+      }
+      return { n, m, tris, nbr, edges, cycles };
+    }
+
+    function buildGraph(n) {
+      let best = null;
+      let attempts = 0;
+      while (!best || attempts < LAYOUT_CANDIDATES) {
+        attempts++;
+        const g = buildOneGraph(n);
+        if (!g) continue;
+        for (let outer = 0; outer < g.m; outer++) {
+          if (g.cycles[outer].length < 4 && g.m > 5) continue;   // prefer a roomy outer region
+          const L = layout(g, outer);
+          if (!best || L.score > best.score) best = { g, outer, pos: L.pos, score: L.score };
+        }
+        if (attempts > 100) break;
+      }
+      const g = best.g;
+      g.outer = best.outer;
+      g.xy = best.pos.map(p => [Math.round((300 + 265 * p[0]) * 10) / 10, Math.round((300 + 265 * p[1]) * 10) / 10]);
+      return g;
+    }
+
+    // ---- UI ----
+    // (The code above is pure logic; the code below touches the page.)
+
+    let G = null;
+    let state = null;
+
+    const REGION_FILL = ["#fbfbfa", "#f1b3ae", "#aec6f0"];   // indexed by regionColours() result
+    const VERTEX_FILL = { "0": "#ffffff", "1": "#c62828", "-1": "#1f4fbf" };
+
+    // Returns, for each region: 0 = white, 1 = red, 2 = blue  (R - B mod 3: 0, +1, -1)
+    function regionColours() {
+      const sums = new Array(G.m).fill(0);
+      for (let i = 0; i < G.n; i++) {
+        for (const v of G.tris[i]) sums[v] += state.colour[i];
+      }
+      return sums.map(s => ((s % 3) + 3) % 3);
+    }
+
+    function newGame() {
+      const sel = document.getElementById("size").value;
+      const n = sel === "random" ? 2 * randInt(MIN_N / 2, MAX_N / 2) : parseInt(sel, 10);
+      G = buildGraph(n);
+      state = { colour: new Array(n).fill(WHITE), turn: FIRST_PLAYER, phase: "colour", winner: null };
+      render();
+    }
+
+    function canClick(i) {
+      if (state.winner) return false;
+      const me = state.turn === "red" ? RED : BLUE;
+      if (state.phase === "colour") return state.colour[i] === WHITE;
+      return FLIP_ANY_VERTEX || state.colour[i] === me;
+    }
+
+    function onVertexClick(i) {
+      if (!canClick(i)) return;
+      const me = state.turn === "red" ? RED : BLUE;
+      if (state.phase === "colour") {
+        state.colour[i] = me;
+        if (!state.colour.includes(WHITE)) state.phase = "flip";
+      } else {
+        state.colour[i] = -state.colour[i];
+      }
+      const checkNow = state.phase === "flip" || WIN_CHECK_DURING_COLOURING;
+      if (checkNow && regionColours().every(c => c === 0)) {
+        state.winner = state.turn;
+      } else {
+        state.turn = state.turn === "red" ? "blue" : "red";
+      }
+      render();
+    }
+
+    function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+    function render() {
+      const rc = regionColours();
+      let s = '<svg viewBox="0 0 600 600" role="img" aria-label="Game board">';
+      s += '<rect x="0" y="0" width="600" height="600" fill="' + REGION_FILL[rc[G.outer]] + '"/>';
+      s += '<text x="10" y="22" font-size="14" fill="#555" font-style="italic">outside region</text>';
+      for (let v = 0; v < G.m; v++) {
+        if (v === G.outer) continue;
+        const pts = G.cycles[v].map(t => G.xy[t][0] + "," + G.xy[t][1]).join(" ");
+        s += '<polygon points="' + pts + '" fill="' + REGION_FILL[rc[v]] + '"/>';
+      }
+      for (const [a, b] of G.edges) {
+        s += '<line x1="' + G.xy[a][0] + '" y1="' + G.xy[a][1] + '" x2="' + G.xy[b][0] + '" y2="' + G.xy[b][1] +
+             '" stroke="#222" stroke-width="3" stroke-linecap="round"/>';
+      }
+      for (let i = 0; i < G.n; i++) {
+        const cls = "vtx" + (canClick(i) ? " ok" : "");
+        s += '<circle class="' + cls + '" data-i="' + i + '" cx="' + G.xy[i][0] + '" cy="' + G.xy[i][1] +
+             '" r="11" fill="' + VERTEX_FILL[state.colour[i]] + '" stroke="#222" stroke-width="3"/>';
+      }
+      s += "</svg>";
+      document.getElementById("board").innerHTML = s;
+
+      const whiteRegions = rc.filter(c => c === 0).length;
+      const whiteVerts = state.colour.filter(c => c === WHITE).length;
+      let main, sub;
+      if (state.winner) {
+        main = '<span class="chip ' + state.winner + '"></span>' + cap(state.winner) + " wins!";
+        sub = "Every region is white.";
+      } else {
+        main = '<span class="chip ' + state.turn + '"></span>' + cap(state.turn) + "\u2019s turn";
+        sub = state.phase === "colour"
+          ? "Colouring phase: click a white vertex to colour it (" + whiteVerts + " left)."
+          : "Flipping phase: click a vertex to flip it between red and blue.";
+      }
+      const info = whiteRegions + " of " + G.m + " regions white";
+      document.getElementById("status").innerHTML =
+        '<div class="main">' + main + '</div><div class="sub">' + sub + " " + info + ".</div>";
+    }
+
+    // ---- STARTUP ----
+    (function init() {
+      const sel = document.getElementById("size");
+      sel.innerHTML = '<option value="random">Random (' + MIN_N + "\u2013" + MAX_N + ")</option>";
+      for (let n = MIN_N; n <= MAX_N; n += 2) sel.innerHTML += '<option value="' + n + '">' + n + "</option>";
+      sel.addEventListener("change", newGame);
+      document.getElementById("newgame").addEventListener("click", newGame);
+      document.getElementById("board").addEventListener("click", function (e) {
+        const el = e.target.closest("[data-i]");
+        if (el) onVertexClick(parseInt(el.getAttribute("data-i"), 10));
+      });
+      newGame();
+    })();
   </script>
 </body>
 </html>
