@@ -34,34 +34,50 @@
     main { max-width: 42rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
     h1 { font-size: 1.8rem; margin: 0 0 0.25rem; }
     .tagline { color: var(--muted); margin: 0 0 1.25rem; }
-    .controls { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    .controls { display: flex; gap: 0.75rem 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
     select, button {
       font: inherit; padding: 0.45rem 0.8rem; border-radius: 6px;
       border: 1px solid var(--border); background: var(--surface); color: var(--text);
     }
     button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
-    button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-    #status {
+    button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    #status, #placer {
       background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
       padding: 0.75rem 1rem; margin-bottom: 1rem;
     }
     #status .main { font-size: 1.1rem; font-weight: 600; }
     #status .sub { color: var(--muted); font-size: 0.92rem; }
+    #placer { display: flex; gap: 0.5rem 1.25rem; align-items: center; flex-wrap: wrap; border: 1px solid var(--border); }
+    #placer[hidden] { display: none; }
+    #placer label { cursor: pointer; }
     .chip {
       display: inline-block; width: 0.9em; height: 0.9em; border-radius: 50%;
-      border: 2px solid #222; margin-right: 0.4em; vertical-align: -0.05em;
+      border: 2px solid #222; margin: 0 0.35em 0 0.2em; vertical-align: -0.05em;
     }
     .chip.red { background: #c62828; }
     .chip.blue { background: #1f4fbf; }
+    .badge {
+      display: inline-block; min-width: 1.5em; text-align: center; padding: 0 0.3em; margin-right: 0.4em;
+      border: 2px solid var(--text); border-radius: 4px; font-size: 0.9em;
+    }
     #board svg {
       display: block; width: 100%; max-width: 640px; height: auto; margin: 0 auto;
       border: 1px solid var(--border); border-radius: 8px; touch-action: manipulation;
     }
+    #board line { pointer-events: none; }
+    #board .region:hover { filter: brightness(0.93); }
     #board .vtx { cursor: default; }
     #board .vtx.ok { cursor: pointer; }
     #board .vtx.ok:hover { stroke-width: 4; }
-    details { margin-top: 1.25rem; color: var(--muted); }
+    #board .vtx.hl { stroke: #f2a900; stroke-width: 5; }
+    details { margin-top: 1rem; color: var(--muted); }
     details summary { cursor: pointer; color: var(--text); }
+    details > div { margin-top: 0.5rem; }
+    .rhead { display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-bottom: 0.4rem; }
+    .swatch { display: inline-block; width: 1.1em; height: 1.1em; border: 1px solid #555; border-radius: 3px; }
+    .rtable { border-collapse: collapse; margin: 0.25rem 0 0.5rem; }
+    .rtable td { padding: 0.1rem 1rem 0.1rem 0; }
+    .rtable td:last-child { text-align: right; padding-right: 0; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -70,19 +86,32 @@
     <p class="tagline">Two players, one graph. Make every region white.</p>
 
     <div class="controls">
+      <label>Variant
+        <select id="variant"></select>
+      </label>
       <label>Vertices
         <select id="size"></select>
       </label>
       <button id="newgame" type="button">New game</button>
     </div>
 
+    <div id="placer" hidden>
+      <span>Colour to place:</span>
+      <label><input type="radio" name="place" value="1"><span class="chip red"></span>Red</label>
+      <label><input type="radio" name="place" value="-1"><span class="chip blue"></span>Blue</label>
+    </div>
+
     <div id="status" aria-live="polite"></div>
     <div id="board"></div>
 
-    <details>
+    <details id="regioninfo" open>
+      <summary>Region details</summary>
+      <div id="regiontext"></div>
+    </details>
+
+    <details id="rulesbox">
       <summary>Rules</summary>
-      <p>Blue moves first. First, players take turns colouring a white vertex with their own colour. Once every vertex is coloured, players take turns flipping one vertex between red and blue. A vertex never goes back to white.</p>
-      <p>Each region is coloured by (red vertices &minus; blue vertices) around its edge, modulo 3: +1 is red, &minus;1 is blue, 0 is white. White vertices don&rsquo;t count. The outside of the graph is a region too (it fills the background). If every region is white after your move, you win.</p>
+      <div id="rules"></div>
     </details>
   </main>
 
@@ -91,7 +120,6 @@
 
     // ---- SETTINGS ----
     const MIN_N = 12, MAX_N = 30;               // vertex count range (must be even)
-    const FIRST_PLAYER = "blue";
     const LAYOUT_CANDIDATES = 15;               // random graphs tried, best-looking layout is kept
 
     const WHITE = 0, RED = 1, BLUE = -1;
@@ -165,6 +193,38 @@
       return order;
     }
 
+    // Safety check: is there at least one red/blue colouring of all vertices that makes
+    // every region white? (If not, the game could never end, so such a board is rejected.)
+    function hasAllWhiteColouring(g) {
+      const n = g.n, m = g.m;
+      const order = [0], seen = new Set([0]);
+      for (let h = 0; h < order.length; h++) {
+        for (const j of g.nbr[order[h]]) if (!seen.has(j)) { seen.add(j); order.push(j); }
+      }
+      const unassigned = g.cycles.map(c => c.length);
+      const sum = new Array(m).fill(0);
+      const mod3 = x => ((x % 3) + 3) % 3;
+      function regionOk(v) {
+        const u = unassigned[v];
+        if (u === 0) return mod3(sum[v]) === 0;
+        if (u === 1) return mod3(sum[v] + 1) === 0 || mod3(sum[v] - 1) === 0;
+        return true;
+      }
+      function search(k) {
+        if (k === n) return true;
+        const i = order[k];
+        for (const val of [1, -1]) {
+          for (const v of g.tris[i]) { sum[v] += val; unassigned[v]--; }
+          let good = true;
+          for (const v of g.tris[i]) if (!regionOk(v)) { good = false; break; }
+          if (good && search(k + 1)) return true;
+          for (const v of g.tris[i]) { sum[v] -= val; unassigned[v]++; }
+        }
+        return false;
+      }
+      return search(0);
+    }
+
     // Tutte embedding: pin the outer region as a regular polygon, every other
     // vertex sits at the average of its neighbours. Planar for 3-connected graphs.
     function layout(g, outer) {
@@ -215,7 +275,9 @@
         if (!c) return null;
         cycles.push(c);
       }
-      return { n, m, tris, nbr, edges, cycles };
+      const g = { n, m, tris, nbr, edges, cycles };
+      if (!hasAllWhiteColouring(g)) return null;
+      return g;
     }
 
     function buildGraph(n) {
@@ -241,64 +303,138 @@
     // ---- UI ----
     // (The code above is pure logic; the code below touches the page.)
 
-    let G = null;
-    let state = null;
+    const VARIANTS = {
+      "1": "Variant 1: colour everything, then flip",
+      "2": "Variant 2: colour or flip on each turn",
+      "5": "Variant 5: flip only, random start"
+    };
 
-    const REGION_FILL = ["#fbfbfa", "#f1b3ae", "#aec6f0"];   // indexed by regionColours() result
+    const COMMON_RULES =
+      "<p>Each region is coloured by (red vertices \u2212 blue vertices) around its edge, modulo 3: " +
+      "+1 is red, \u22121 is blue, 0 is white. White vertices don\u2019t count. " +
+      "The outside of the graph is a region too (it fills the background). " +
+      "A vertex never goes back to white.</p>";
+
+    const VARIANT_RULES = {
+      "1": "<p>Player 1 moves first. First, players take turns colouring a white vertex red or blue " +
+           "(your choice each turn, using the \u201cColour to place\u201d buttons). Once every vertex is coloured, " +
+           "players take turns flipping one vertex between red and blue. Whoever leaves every region white " +
+           "after their move wins. This can happen on the last colouring move, but not before it.</p>",
+      "2": "<p>Player 1 moves first. On your turn, either colour any white vertex red or blue " +
+           "(using the \u201cColour to place\u201d buttons), or flip any coloured vertex. " +
+           "The game can only be won once every vertex is coloured: whoever leaves every region white " +
+           "(with no white vertices left) wins.</p>",
+      "5": "<p>Every vertex starts coloured at random. Players take turns flipping one vertex between " +
+           "red and blue. Whoever leaves every region white after their move wins. " +
+           "You can also play alone as a puzzle: try to reach all-white in as few moves as you can.</p>"
+    };
+
+    const REGION_FILL = ["#fbfbfa", "#f1b3ae", "#aec6f0"];   // indexed by region code: 0 white, 1 red, 2 blue
+    const REGION_NAME = ["white", "red", "blue"];
     const VERTEX_FILL = { "0": "#ffffff", "1": "#c62828", "-1": "#1f4fbf" };
 
-    // Returns, for each region: 0 = white, 1 = red, 2 = blue  (R - B mod 3: 0, +1, -1)
+    let G = null;
+    let state = null;
+    let variant = "1";
+    let placeColour = RED;
+    let hoverRegion = null;
+
+    function mod3(x) { return ((x % 3) + 3) % 3; }
+    function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+    function signed(d) { return d < 0 ? "\u2212" + (-d) : (d > 0 ? "+" + d : "0"); }
+
+    // For each region: 0 = white, 1 = red, 2 = blue  (R - B mod 3 = 0, +1, -1)
     function regionColours() {
       const sums = new Array(G.m).fill(0);
       for (let i = 0; i < G.n; i++) {
         for (const v of G.tris[i]) sums[v] += state.colour[i];
       }
-      return sums.map(s => ((s % 3) + 3) % 3);
+      return sums.map(mod3);
     }
 
     function newGame() {
+      variant = document.getElementById("variant").value;
       const sel = document.getElementById("size").value;
       const n = sel === "random" ? 2 * randInt(MIN_N / 2, MAX_N / 2) : parseInt(sel, 10);
       G = buildGraph(n);
-      state = { colour: new Array(n).fill(WHITE), turn: FIRST_PLAYER, phase: "colour", winner: null };
+      state = { colour: new Array(n).fill(WHITE), turn: 1, winner: null, moves: 0 };
+      if (variant === "5") {
+        do {
+          for (let i = 0; i < n; i++) state.colour[i] = Math.random() < 0.5 ? RED : BLUE;
+        } while (regionColours().every(c => c === 0));
+      }
+      hoverRegion = null;
+      document.getElementById("rules").innerHTML = COMMON_RULES + VARIANT_RULES[variant];
       render();
     }
 
     function canClick(i) {
       if (state.winner) return false;
-      if (state.phase === "colour") return state.colour[i] === WHITE;
-      return true;                              // flip phase: any vertex, either colour
+      if (variant === "1" && state.colour.includes(WHITE)) return state.colour[i] === WHITE;
+      return true;
     }
 
     function onVertexClick(i) {
       if (!canClick(i)) return;
-      const me = state.turn === "red" ? RED : BLUE;
-      if (state.phase === "colour") {
-        state.colour[i] = me;
-        if (!state.colour.includes(WHITE)) state.phase = "flip";
-      } else {
-        state.colour[i] = -state.colour[i];
-      }
-      // No wins while vertices are still being coloured; only check once the flip phase has begun.
-      if (state.phase === "flip" && regionColours().every(c => c === 0)) {
+      if (state.colour[i] === WHITE) state.colour[i] = placeColour;   // colour a white vertex
+      else state.colour[i] = -state.colour[i];                        // flip a coloured vertex
+      state.moves++;
+      // A win needs every vertex coloured and every region white.
+      if (!state.colour.includes(WHITE) && regionColours().every(c => c === 0)) {
         state.winner = state.turn;
       } else {
-        state.turn = state.turn === "red" ? "blue" : "red";
+        state.turn = 3 - state.turn;
       }
       render();
     }
 
-    function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+    function playerLabel(p) { return '<span class="badge">' + p + "</span>Player " + p; }
+
+    function renderRegionInfo() {
+      const box = document.getElementById("regiontext");
+      if (hoverRegion === null) {
+        box.innerHTML = "Hover over a region of the board to see how its colour is worked out.";
+        return;
+      }
+      let r = 0, b = 0, w = 0;
+      for (const t of G.cycles[hoverRegion]) {
+        const c = state.colour[t];
+        if (c === RED) r++; else if (c === BLUE) b++; else w++;
+      }
+      const d = r - b;
+      const code = mod3(d);
+      const where = hoverRegion === G.outer ? " (the outside region)" : "";
+      let how;
+      if (code === 0) how = "0 mod 3, so the region is white.";
+      else if (code === 1) how = (d === 1 ? "" : signed(d) + " is ") + "+1 mod 3, so the region is red.";
+      else how = (d === -1 ? "" : signed(d) + " is ") + "\u22121 mod 3, so the region is blue.";
+      box.innerHTML =
+        '<div class="rhead"><span class="swatch" style="background:' + REGION_FILL[code] + '"></span>' +
+        "<strong>" + cap(REGION_NAME[code]) + " region</strong>" + where + "</div>" +
+        '<table class="rtable">' +
+        "<tr><td>Red vertices</td><td>" + r + "</td></tr>" +
+        "<tr><td>Blue vertices</td><td>" + b + "</td></tr>" +
+        "<tr><td>White vertices (ignored)</td><td>" + w + "</td></tr>" +
+        "</table>" +
+        "<div>Red \u2212 blue = " + signed(d).replace("+", "") + ". " + how + "</div>";
+    }
+
+    function applyHighlight() {
+      const set = new Set(hoverRegion === null ? [] : G.cycles[hoverRegion]);
+      document.querySelectorAll("#board .vtx").forEach(el => {
+        el.classList.toggle("hl", set.has(parseInt(el.getAttribute("data-i"), 10)));
+      });
+    }
 
     function render() {
       const rc = regionColours();
       let s = '<svg viewBox="0 0 600 600" role="img" aria-label="Game board">';
-      s += '<rect x="0" y="0" width="600" height="600" fill="' + REGION_FILL[rc[G.outer]] + '"/>';
-      s += '<text x="10" y="22" font-size="14" fill="#555" font-style="italic">outside region</text>';
+      s += '<rect class="region" data-r="' + G.outer + '" x="0" y="0" width="600" height="600" fill="' +
+           REGION_FILL[rc[G.outer]] + '"/>';
       for (let v = 0; v < G.m; v++) {
         if (v === G.outer) continue;
         const pts = G.cycles[v].map(t => G.xy[t][0] + "," + G.xy[t][1]).join(" ");
-        s += '<polygon points="' + pts + '" fill="' + REGION_FILL[rc[v]] + '"/>';
+        s += '<polygon class="region" data-r="' + v + '" points="' + pts + '" fill="' + REGION_FILL[rc[v]] + '"/>';
       }
       for (const [a, b] of G.edges) {
         s += '<line x1="' + G.xy[a][0] + '" y1="' + G.xy[a][1] + '" x2="' + G.xy[b][0] + '" y2="' + G.xy[b][1] +
@@ -316,30 +452,64 @@
       const whiteVerts = state.colour.filter(c => c === WHITE).length;
       let main, sub;
       if (state.winner) {
-        main = '<span class="chip ' + state.winner + '"></span>' + cap(state.winner) + " wins!";
+        main = playerLabel(state.winner) + " wins!";
         sub = "Every region is white.";
       } else {
-        main = '<span class="chip ' + state.turn + '"></span>' + cap(state.turn) + "\u2019s turn";
-        sub = state.phase === "colour"
-          ? "Colouring phase: click a white vertex to colour it (" + whiteVerts + " left)."
-          : "Flipping phase: click a vertex to flip it between red and blue.";
+        main = playerLabel(state.turn) + "\u2019s turn";
+        if (variant === "1") {
+          sub = whiteVerts > 0
+            ? "Colouring phase: click a white vertex to colour it (" + whiteVerts + " left)."
+            : "Flipping phase: click any vertex to flip it between red and blue.";
+        } else if (variant === "2") {
+          sub = whiteVerts > 0
+            ? "Click a white vertex to colour it, or a coloured vertex to flip it (" + whiteVerts + " white left)."
+            : "All vertices are coloured: click any vertex to flip it.";
+        } else {
+          sub = "Click any vertex to flip it between red and blue.";
+        }
       }
-      const info = whiteRegions + " of " + G.m + " regions white";
-      document.getElementById("status").innerHTML =
-        '<div class="main">' + main + '</div><div class="sub">' + sub + " " + info + ".</div>";
+      sub += " " + whiteRegions + " of " + G.m + " regions white. Moves: " + state.moves + ".";
+      document.getElementById("status").innerHTML = '<div class="main">' + main + '</div><div class="sub">' + sub + "</div>";
+
+      const placer = document.getElementById("placer");
+      placer.hidden = !(variant !== "5" && whiteVerts > 0 && !state.winner);
+      document.querySelectorAll('#placer input[name="place"]').forEach(inp => {
+        inp.checked = parseInt(inp.value, 10) === placeColour;
+      });
+
+      renderRegionInfo();
+      applyHighlight();
     }
 
     // ---- STARTUP ----
     (function init() {
+      const vsel = document.getElementById("variant");
+      for (const key of Object.keys(VARIANTS)) {
+        vsel.innerHTML += '<option value="' + key + '">' + VARIANTS[key] + "</option>";
+      }
       const sel = document.getElementById("size");
       sel.innerHTML = '<option value="random">Random (' + MIN_N + "\u2013" + MAX_N + ")</option>";
       for (let n = MIN_N; n <= MAX_N; n += 2) sel.innerHTML += '<option value="' + n + '">' + n + "</option>";
+      vsel.addEventListener("change", newGame);
       sel.addEventListener("change", newGame);
       document.getElementById("newgame").addEventListener("click", newGame);
-      document.getElementById("board").addEventListener("click", function (e) {
-        const el = e.target.closest("[data-i]");
-        if (el) onVertexClick(parseInt(el.getAttribute("data-i"), 10));
+      document.querySelectorAll('#placer input[name="place"]').forEach(inp => {
+        inp.addEventListener("change", function () { placeColour = parseInt(inp.value, 10); });
       });
+
+      const board = document.getElementById("board");
+      board.addEventListener("click", function (e) {
+        const vtx = e.target.closest("[data-i]");
+        if (vtx) { onVertexClick(parseInt(vtx.getAttribute("data-i"), 10)); return; }
+        showRegion(e);                                   // tapping a region also works on touch screens
+      });
+      board.addEventListener("mouseover", showRegion);
+      function showRegion(e) {
+        const el = e.target.closest("[data-r]");
+        if (!el) return;                                 // over a vertex or edge: keep the last region shown
+        const v = parseInt(el.getAttribute("data-r"), 10);
+        if (v !== hoverRegion) { hoverRegion = v; renderRegionInfo(); applyHighlight(); }
+      }
       newGame();
     })();
   </script>
